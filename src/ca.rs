@@ -1,4 +1,4 @@
-use color_eyre::eyre::{Context, ContextCompat};
+use color_eyre::eyre::Context;
 use hudsucker::{
     certificate_authority::RcgenAuthority,
     rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, KeyUsagePurpose},
@@ -35,7 +35,7 @@ impl CaFiles {
 /// Loads a persistent CA from disk, or generates and saves a new one.
 ///
 /// # Directory layout
-/// ```
+/// ```text
 /// ca_dir/
 /// ├── ca.cer   ← PEM-encoded CA certificate (install this in clients)
 /// └── ca.key   ← PEM-encoded private key    (keep this secret)
@@ -139,4 +139,85 @@ fn build_authority(cert_pem: &str, key_pem: &str) -> crate::Result<RcgenAuthorit
         CERT_CACHE_SIZE,
         aws_lc_rs::default_provider(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn generates_ca_files_when_none_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        load_or_create(dir.path()).await.unwrap();
+        assert!(dir.path().join(CA_CERT_FILENAME).exists());
+        assert!(dir.path().join(CA_KEY_FILENAME).exists());
+    }
+
+    #[tokio::test]
+    async fn reuses_existing_ca_on_second_call() {
+        let dir = tempfile::tempdir().unwrap();
+        load_or_create(dir.path()).await.unwrap();
+        let cert_first = fs::read_to_string(dir.path().join(CA_CERT_FILENAME))
+            .await
+            .unwrap();
+
+        load_or_create(dir.path()).await.unwrap();
+        let cert_second = fs::read_to_string(dir.path().join(CA_CERT_FILENAME))
+            .await
+            .unwrap();
+
+        assert_eq!(cert_first, cert_second, "CA cert should not be regenerated");
+    }
+
+    #[tokio::test]
+    async fn returns_error_on_corrupt_key_file() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(CA_CERT_FILENAME), "not a cert")
+            .await
+            .unwrap();
+        fs::write(dir.path().join(CA_KEY_FILENAME), "not a key")
+            .await
+            .unwrap();
+
+        assert!(load_or_create(dir.path()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn creates_ca_directory_if_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("nested").join("ca");
+        load_or_create(&nested).await.unwrap();
+        assert!(nested.join(CA_CERT_FILENAME).exists());
+    }
+
+    // ── Edge cases ────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn partial_ca_files_triggers_regeneration() {
+        let dir = tempfile::tempdir().unwrap();
+        // Only the cert exists (key missing) — treated as missing, regenerate both.
+        fs::write(dir.path().join(CA_CERT_FILENAME), "stale")
+            .await
+            .unwrap();
+
+        load_or_create(dir.path()).await.unwrap();
+
+        assert!(dir.path().join(CA_KEY_FILENAME).exists());
+        let cert = fs::read_to_string(dir.path().join(CA_CERT_FILENAME))
+            .await
+            .unwrap();
+        assert!(cert.contains("-----BEGIN CERTIFICATE-----"));
+    }
+
+    #[test]
+    fn generated_cert_is_valid_pem() {
+        let (cert_pem, _key_pem) = generate_ca_pem().unwrap();
+        assert!(cert_pem.contains("-----BEGIN CERTIFICATE-----"));
+    }
+
+    #[test]
+    fn generated_key_is_valid_pem() {
+        let (_cert_pem, key_pem) = generate_ca_pem().unwrap();
+        assert!(key_pem.contains("-----BEGIN PRIVATE KEY-----"));
+    }
 }

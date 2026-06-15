@@ -1,30 +1,22 @@
 #![allow(dead_code, unused)]
 
-mod ca;
-mod fetcher;
-mod proxy_handler;
-mod proxy_pool;
-mod routes;
-
-use axum::{
-    Router,
-    routing::{get, post},
-};
 use hudsucker::{
     Proxy,
     certificate_authority::RcgenAuthority,
     rcgen::{self, CertificateParams, DistinguishedName, Issuer, KeyPair},
     rustls::crypto::aws_lc_rs,
 };
-use proxy_handler::RotatingProxyHandler;
-use proxy_pool::{ProxyPool, SharedPool};
+use proxima::{
+    Result,
+    proxy_handler::RotatingProxyHandler,
+    proxy_pool::{ProxyPool, SharedPool},
+    router,
+};
 use std::{
     net::SocketAddr,
     sync::{Arc, RwLock},
 };
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
-
-pub type Result<T> = color_eyre::eyre::Result<T>;
 
 /// Generates a transient self-signed CA entirely in memory.
 /// No files, no setup — regenerated fresh on every startup.
@@ -57,11 +49,7 @@ async fn main() -> Result<()> {
     let pool: SharedPool = Arc::new(RwLock::new(ProxyPool::default()));
 
     // ── Axum control plane (port 8000) ──────────────────────────────────────
-    let control_router = Router::new()
-        .route("/", get(routes::health_check))
-        .route("/stats", get(routes::pool_stats))
-        .route("/reload", post(routes::reload_pool))
-        .with_state(pool.clone());
+    let control_router = router(pool.clone());
 
     let control_addr = "127.0.0.1:8000";
     let listener = tokio::net::TcpListener::bind(control_addr).await?;
